@@ -62,25 +62,33 @@ parse_age_filter <- function(x) {
 
 #' Retrieve DAD (Discharge Abstract Database) records.
 #'
-#' Filters by separation_date range and optionally by age.
-#' patient_master_key is bounded to exclude test/invalid records.
+#' Filters by separation_date range, optionally by age, and optionally by a
+#' list of ICD codes matched across diag_code_1 through diag_code_25.
+#' A record is returned if ANY diagnosis column starts with one of the
+#' provided codes (prefix match — e.g. "J44" matches "J44.0", "J44.1", etc.)
 #'
 #' @param con         A DBI database connection object.
 #' @param start_date  Start of date range (character "YYYY-MM-DD" or Date).
 #' @param end_date    End of date range   (character "YYYY-MM-DD" or Date).
 #' @param columns     Character vector of column names to select. NULL = all columns.
 #' @param age_filter  Optional. c(min, max) or "X+" string. Default NULL (no filter).
+#' @param icd_codes   Optional. Character vector of ICD code prefixes to filter on.
+#'                    Matches against diag_code_1 through diag_code_25 (OR logic).
+#'                    Prefix match: "J44" matches "J44", "J44.0", "J44.1", etc.
+#'                    Default NULL (no filter).
 #' @return            A tibble of DAD records collected into R memory.
 #' @examples
 #'   get_dad_data(con, "2021-01-01", "2021-12-31", columns = dad_cols)
-#'   get_dad_data(con, "2021-01-01", "2021-12-31", columns = dad_cols, age_filter = c(18, 65))
-#'   get_dad_data(con, "2021-01-01", "2021-12-31", columns = NULL)  # all columns
+#'   get_dad_data(con, "2021-01-01", "2021-12-31", columns = dad_cols,
+#'                icd_codes = c("J44", "J45"))
+#'   get_dad_data(con, "2021-01-01", "2021-12-31", columns = dad_cols,
+#'                age_filter = c(18, 65), icd_codes = c("J44", "J45"))
 
-get_dad_data <- function(con, start_date, end_date, columns = NULL, age_filter = NULL) {
+get_dad_data <- function(con, start_date, end_date, columns = NULL,
+                         age_filter = NULL, icd_codes = NULL) {
   
   query <- tbl(con, in_schema("nb0077aa", "vw_dad"))
   
-  # Select specific columns if provided, otherwise keep all (SELECT *)
   if (!is.null(columns)) {
     query <- query %>% select(all_of(columns))
   }
@@ -89,48 +97,81 @@ get_dad_data <- function(con, start_date, end_date, columns = NULL, age_filter =
     filter(
       separation_date >= as_date(start_date),
       separation_date <= as_date(end_date),
-      patient_master_key > 0,           # exclude invalid/test keys
+      patient_master_key > 0,
       patient_master_key < 2000000000
     )
   
-  # Optionally layer on an age filter using bounds from parse_age_filter()
   if (!is.null(age_filter)) {
     age <- parse_age_filter(age_filter)
     
     if (is.finite(age$upper)) {
       query <- query %>% filter(age_year >= !!age$lower, age_year <= !!age$upper)
     } else {
-      query <- query %>% filter(age_year >= !!age$lower)  # open-ended, e.g. "65+"
+      query <- query %>% filter(age_year >= !!age$lower)
     }
   }
   
+  # ICD code filter: prefix match across diag_code_1 to diag_code_25.
+  # Builds one LIKE condition per code per column, then OR-s everything together.
+  # diag_code_2 to diag_code_25 are guarded with IS NOT NULL first.
+  if (!is.null(icd_codes)) {
+    
+    # Build a prefix-match condition for one column and one code vector.
+    # Produces: col LIKE 'J44%' OR col LIKE 'J45%' OR ...
+    make_prefix_filter <- function(col, codes) {
+      conditions <- lapply(codes, function(code) {
+        like(col, paste0(code, "%"))
+      })
+      Reduce(`|`, conditions)
+    }
+    
+    diag_cols_nullable <- paste0("diag_code_", 2:25)
+    
+    # diag_code_1 is always present — no NULL guard needed
+    icd_filter <- make_prefix_filter(sym("diag_code_1"), icd_codes)
+    
+    # diag_code_2 to diag_code_25 — guard against NULL before prefix match
+    for (col in diag_cols_nullable) {
+      icd_filter <- icd_filter |
+        (!is.na(!!sym(col)) & make_prefix_filter(sym(col), icd_codes))
+    }
+    
+    query <- query %>% filter(!!icd_filter)
+  }
+  
   message("Collecting DAD data: ", start_date, " to ", end_date,
-          if (!is.null(age_filter)) paste0(" | age: ", paste(age_filter, collapse = "-")) else "")
+          if (!is.null(age_filter)) paste0(" | age: ",  paste(age_filter, collapse = "-"))  else "",
+          if (!is.null(icd_codes))  paste0(" | ICD: ",  paste(icd_codes,  collapse = ", ")) else "")
   
   collect(query)
 }
 
 
+
 #' Retrieve MSP (Medical Services Plan) records.
 #'
-#' Filters by serv_dt (service date) range and optionally by age group.
-#'
-#' Note: clnt_a_grp is used as the age field. If this column stores age-group
-#' labels (e.g. "18-34") rather than numeric ages, age_filter will not apply
-#' correctly — verify the column type before using age_filter with MSP data.
+#' Filters by serv_dt (service date) range, optionally by age, and optionally
+#' by a list of diagnosis codes matched across diag_cd, diag_cd_2, diag_cd_3.
+#' A record is returned if ANY of the three diagnosis code columns matches.
 #'
 #' @param con         A DBI database connection object.
 #' @param start_date  Start of date range (character "YYYY-MM-DD" or Date).
 #' @param end_date    End of date range   (character "YYYY-MM-DD" or Date).
 #' @param columns     Character vector of column names to select. NULL = all columns.
 #' @param age_filter  Optional. c(min, max) or "X+" string. Default NULL (no filter).
+#' @param diag_codes  Optional. Character vector of diagnosis codes to filter on.
+#'                    Matches against diag_cd, diag_cd_2, and diag_cd_3 (OR logic).
+#'                    Default NULL (no filter).
 #' @return            A tibble of MSP records collected into R memory.
 #' @examples
 #'   get_msp_data(con, "2020-12-01", "2020-12-15", columns = msp_cols)
-#'   get_msp_data(con, "2020-12-01", "2020-12-15", columns = msp_cols, age_filter = c(18, 65))
-#'   get_msp_data(con, "2020-12-01", "2020-12-15", columns = NULL)  # all columns
+#'   get_msp_data(con, "2020-12-01", "2020-12-15", columns = msp_cols,
+#'                diag_codes = c("A01", "B02", "C03"))
+#'   get_msp_data(con, "2020-12-01", "2020-12-15", columns = msp_cols,
+#'                age_filter = c(18, 65), diag_codes = c("A01", "B02"))
 
-get_msp_data <- function(con, start_date, end_date, columns = NULL, age_filter = NULL) {
+get_msp_data <- function(con, start_date, end_date, columns = NULL,
+                         age_filter = NULL, diag_codes = NULL) {
   
   query <- tbl(con, in_schema("nb0077aa", "vw_msp"))
   
@@ -143,30 +184,41 @@ get_msp_data <- function(con, start_date, end_date, columns = NULL, age_filter =
     filter(
       serv_dt >= as_date(start_date),
       serv_dt <= as_date(end_date),
-      patient_master_key > 0,           # exclude invalid/test keys
+      patient_master_key > 0,
       patient_master_key < 2000000000
     )
   
-  # Optionally layer on an age filter using bounds from parse_age_filter()
-  
+  # Age filter using birth year (higher birth year = younger patient)
   if (!is.null(age_filter)) {
     age <- parse_age_filter(age_filter)
-    current_year <- as.integer(format(Sys.Date(), "%Y"))
     
     if (is.finite(age$upper)) {
       query <- query %>% filter(
-        clnt_birth_year <= current_year - !!age$lower,  # old enough
-        clnt_birth_year >= current_year - !!age$upper   # young enough
+        clnt_birth_year <= year(serv_dt) - !!age$lower,
+        clnt_birth_year >= year(serv_dt) - !!age$upper
       )
     } else {
       query <- query %>% filter(
-        clnt_birth_year <= current_year - !!age$lower   # open-ended, e.g. "65+"
+        clnt_birth_year <= year(serv_dt) - !!age$lower
       )
     }
   }
   
+  # Diagnosis code filter: match any of the three diag columns (OR logic).
+  # diag_cd_2 and diag_cd_3 can be NULL, so only those columns are checked
+  # with %in% when the value is not NA.
+  if (!is.null(diag_codes)) {
+    query <- query %>%
+      filter(
+        diag_cd %in% !!diag_codes |
+          (!is.na(diag_cd_2) & diag_cd_2 %in% !!diag_codes) |
+          (!is.na(diag_cd_3) & diag_cd_3 %in% !!diag_codes)
+      )
+  }
+  
   message("Collecting MSP data: ", start_date, " to ", end_date,
-          if (!is.null(age_filter)) paste0(" | age: ", paste(age_filter, collapse = "-")) else "")
+          if (!is.null(age_filter))  paste0(" | age: ",  paste(age_filter,  collapse = "-")) else "",
+          if (!is.null(diag_codes))  paste0(" | codes: ", paste(diag_codes, collapse = ", ")) else "")
   
   collect(query)
 }
@@ -183,34 +235,57 @@ dad_cols <- c(
   "file_year", "hospital",
   "hosp_from", "hosp_to", "care_level",
   "alc_days", "grpr_mthd_label", "cmg_mcc_label", "cmg_cmg_label", "cmg_expct_stay_days",
-  "grpr_riw", "cmgp_riw_atpcl_label", "cacs_mac_label", "cacs_cd_label"
+  "grpr_riw", "cmgp_riw_atpcl_label", "cacs_mac_label", "cacs_cd_label",
+  paste0("diag_code_", 1:25)
 )
 
 msp_cols <- c(
   "patient_master_key", "msp_id", "paye_num",
-  "clnt_gndr", "clnt_a_grp","clnt_birth_year",
+  "clnt_gndr", "clnt_a_grp", "clnt_birth_year",
   "serv_dt",
   "paye_stat", "fitm", "paid_serv",
   "clm_tp", "clm_spec", "first_paid_date", "last_paid_date",
   "pmepd_amt", "pmeni_amt", "pmerl_amt", "expd_amt", "billed_service",
-  "int_amt", "bcp_amt", "billed_service_clfn_code", "msp_claim_payment_category"
+  "int_amt", "bcp_amt", "billed_service_clfn_code", "msp_claim_payment_category",
+  "diag_cd", "diag_cd_2", "diag_cd_3"
 )
 
-# Adjust date ranges and age_filter as needed for your analysis.
-# Remove age_filter arguments entirely if no age restriction is required.
+# ICD codes for DAD filtering (prefix match, no dots).
+# e.g. "J44" matches J440, J441, J449, etc.
+# Set to NULL to retrieve all records regardless of diagnosis.
+dad_icd_codes <- c(
+  # Add ICD code prefixes here, e.g.:
+  # "J44",   # COPD
+  # "J45"    # Asthma
+)
+
+# Diagnosis codes for MSP filtering (exact match).
+# Set to NULL to retrieve all records regardless of diagnosis.
+msp_diag_codes <- c(
+  # Add MSP billing/diagnosis codes here, e.g.:
+  # "A001",
+  # "A002"
+)
+
+# Adjust date ranges, age_filter, and code lists as needed for your analysis.
+# Remove any optional argument entirely if no restriction is required.
 
 df_dad <- get_dad_data(
   con,
   start_date = "2020-12-01",
   end_date   = "2020-12-15",
-  columns    = dad_cols
+  columns    = dad_cols,
+  age_filter = NULL,              # e.g. c(18, 65) or "65+"
+  icd_codes  = dad_icd_codes
 )
 
 df_msp <- get_msp_data(
   con,
   start_date = "2020-12-01",
   end_date   = "2020-12-15",
-  columns    = msp_cols
+  columns    = msp_cols,
+  age_filter = NULL,              # e.g. c(18, 65) or "65+"
+  diag_codes = msp_diag_codes
 )
 
 
