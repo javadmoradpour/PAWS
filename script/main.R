@@ -16,4 +16,4 @@ source(file.path(getwd(), "script", "load.R"))
 
 # Source Scripts ----------------------------------------------------------
 
-source(file.path(getwd(), "script", "explore_JT.R"))
+source(file.path(getwd(), "script", "analysis.R"))
