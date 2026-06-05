@@ -86,7 +86,7 @@ age_filter = NULL         # no age filter (default)
 
 ### Diagnosis Code Filter
 
-**DAD — ICD-10 prefix matching** (checks all 25 diagnosis code columns):
+**DAD — ICD-10-CA prefix matching** (checks all 25 diagnosis code columns):
 
 ```r
 dad_icd_codes <- c("J44", "J45")   # COPD, Asthma
@@ -95,14 +95,14 @@ dad_icd_codes <- c()                # no filter (default)
 
 A record is included if any of `diag_code_1` through `diag_code_25` starts with any of the provided prefixes (e.g., `"J44"` matches `"J44.0"`, `"J44.1"`, etc.).
 
-**MSP — exact diagnosis code matching** (checks `diag_cd`, `diag_cd_2`, `diag_cd_3`):
+**MSP — ICD-9 exact matching** (checks `diag_cd`, `diag_cd_2`, `diag_cd_3`):
 
 ```r
-msp_diag_codes <- c("A001", "A002")
+msp_diag_codes <- c("491", "493")   # Chronic bronchitis, Asthma (ICD-9)
 msp_diag_codes <- c()               # no filter (default)
 ```
 
-A record is included if any of the three diagnosis columns exactly matches any of the provided codes.
+MSP uses ICD-9 codes (unlike DAD which uses ICD-10). Matching is exact, so you must supply the full code as it appears in the data. A record is included if any of the three diagnosis columns exactly matches any of the provided codes.
 
 ### Column Selection
 
