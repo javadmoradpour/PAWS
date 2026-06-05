@@ -93,10 +93,13 @@ get_dad_data <- function(con, start_date, end_date, columns = NULL,
     query <- query %>% select(all_of(columns))
   }
   
+  start_date <- as.Date(start_date)
+  end_date   <- as.Date(end_date)
+
   query <- query %>%
     filter(
-      separation_date >= as_date(start_date),
-      separation_date <= as_date(end_date),
+      separation_date >= !!start_date,
+      separation_date <= !!end_date,
       patient_master_key > 0,
       patient_master_key < 2000000000
     )
@@ -115,27 +118,39 @@ get_dad_data <- function(con, start_date, end_date, columns = NULL,
   # Builds one LIKE condition per code per column, then OR-s everything together.
   # diag_code_2 to diag_code_25 are guarded with IS NOT NULL first.
   if (!is.null(icd_codes)) {
-    
-    # Build a prefix-match condition for one column and one code vector.
-    # Produces: col LIKE 'J44%' OR col LIKE 'J45%' OR ...
+
     make_prefix_filter <- function(col, codes) {
-      conditions <- lapply(codes, function(code) {
-        like(col, paste0(code, "%"))
+      lapply(codes, function(code) {
+        expr(!!col %like% !!paste0(code, "%"))
       })
-      Reduce(`|`, conditions)
     }
-    
+
+    all_conditions <- list()
+
+    # diag_code_1 (no NULL guard)
+    all_conditions <- c(
+      all_conditions,
+      make_prefix_filter(sym("diag_code_1"), icd_codes)
+    )
+
+    # diag_code_2 to 25 (with NULL guard)
     diag_cols_nullable <- paste0("diag_code_", 2:25)
-    
-    # diag_code_1 is always present — no NULL guard needed
-    icd_filter <- make_prefix_filter(sym("diag_code_1"), icd_codes)
-    
-    # diag_code_2 to diag_code_25 — guard against NULL before prefix match
+
     for (col in diag_cols_nullable) {
-      icd_filter <- icd_filter |
-        (!is.na(!!sym(col)) & make_prefix_filter(sym(col), icd_codes))
+      sym_col <- sym(col)
+
+      conditions <- make_prefix_filter(sym_col, icd_codes)
+
+      guarded_conditions <- lapply(conditions, function(cond) {
+        expr(!is.na(!!sym_col) & !!cond)
+      })
+
+      all_conditions <- c(all_conditions, guarded_conditions)
     }
-    
+
+    # Combine ALL conditions into ONE expression
+    icd_filter <- Reduce(function(x, y) expr(!!x | !!y), all_conditions)
+
     query <- query %>% filter(!!icd_filter)
   }
   
@@ -166,9 +181,9 @@ get_dad_data <- function(con, start_date, end_date, columns = NULL,
 #' @examples
 #'   get_msp_data(con, "2020-12-01", "2020-12-15", columns = msp_cols)
 #'   get_msp_data(con, "2020-12-01", "2020-12-15", columns = msp_cols,
-#'                diag_codes = c("A01", "B02", "C03"))
+#'                diag_codes = c("493", "496"))
 #'   get_msp_data(con, "2020-12-01", "2020-12-15", columns = msp_cols,
-#'                age_filter = c(18, 65), diag_codes = c("A01", "B02"))
+#'                age_filter = c(18, 65), diag_codes = c("493", "496"))
 
 get_msp_data <- function(con, start_date, end_date, columns = NULL,
                          age_filter = NULL, diag_codes = NULL) {
@@ -180,10 +195,13 @@ get_msp_data <- function(con, start_date, end_date, columns = NULL,
     query <- query %>% select(all_of(columns))
   }
   
+  start_date <- as.Date(start_date)
+  end_date   <- as.Date(end_date)
+
   query <- query %>%
     filter(
-      serv_dt >= as_date(start_date),
-      serv_dt <= as_date(end_date),
+      serv_dt >= !!start_date,
+      serv_dt <= !!end_date,
       patient_master_key > 0,
       patient_master_key < 2000000000
     )
@@ -256,15 +274,15 @@ msp_cols <- c(
 dad_icd_codes <- c(
   # Add ICD code prefixes here, e.g.:
   # "J44",   # COPD
-  # "J45"    # Asthma
+  "J45"    # Asthma
 )
 
 # Diagnosis codes for MSP filtering (exact match).
 # Set to NULL to retrieve all records regardless of diagnosis.
 msp_diag_codes <- c(
   # Add MSP billing/diagnosis codes here, e.g.:
-  # "A001",
-  # "A002"
+  # "496",     # COPD
+  "493"     # Asthma
 )
 
 # Adjust date ranges, age_filter, and code lists as needed for your analysis.
@@ -275,7 +293,7 @@ df_dad <- get_dad_data(
   start_date = "2020-12-01",
   end_date   = "2020-12-15",
   columns    = dad_cols,
-  age_filter = NULL,              # e.g. c(18, 65) or "65+"
+  age_filter = c(18, 40),         # e.g. c(18, 65) or "65+" or NULL
   icd_codes  = dad_icd_codes
 )
 
@@ -284,7 +302,7 @@ df_msp <- get_msp_data(
   start_date = "2020-12-01",
   end_date   = "2020-12-15",
   columns    = msp_cols,
-  age_filter = NULL,              # e.g. c(18, 65) or "65+"
+  age_filter = c(18, 40),         # e.g. c(18, 65) or "65+"
   diag_codes = msp_diag_codes
 )
 
