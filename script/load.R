@@ -117,7 +117,7 @@ get_dad_data <- function(con, start_date, end_date, columns = NULL,
   # ICD code filter: prefix match across diag_code_1 to diag_code_25.
   # Builds one LIKE condition per code per column, then OR-s everything together.
   # diag_code_2 to diag_code_25 are guarded with IS NOT NULL first.
-  if (!is.null(icd_codes)) {
+  if (!is.null(icd_codes) && length(icd_codes) > 0) {
 
     make_prefix_filter <- function(col, codes) {
       lapply(codes, function(code) {
@@ -225,7 +225,7 @@ get_msp_data <- function(con, start_date, end_date, columns = NULL,
   # Diagnosis code filter: match any of the three diag columns (OR logic).
   # diag_cd_2 and diag_cd_3 can be NULL, so only those columns are checked
   # with %in% when the value is not NA.
-  if (!is.null(diag_codes)) {
+  if (!is.null(diag_codes) && length(diag_codes) > 0) {
     query <- query %>%
       filter(
         diag_cd %in% !!diag_codes |
@@ -269,22 +269,39 @@ msp_cols <- c(
   "diag_cd", "diag_cd_2", "diag_cd_3"
 )
 
-# ICD codes for DAD filtering (prefix match, no dots).
-# e.g. "J44" matches J440, J441, J449, etc.
-# Set to NULL to retrieve all records regardless of diagnosis.
-dad_icd_codes <- c(
-  # Add ICD code prefixes here, e.g.:
-  # "J44",   # COPD
-  "J45"    # Asthma
-)
+# ICD-10-CA codes for DAD filtering — prefix match, no dots, no spaces.
+#
+# How it works:
+#   Each code is matched against diag_code_1 through diag_code_25 using a
+#   prefix (LIKE) match, so a shorter code catches all its subcodes:
+#     "J44"  matches J440, J441, J449  (all COPD subcodes)
+#     "J45"  matches J450, J451, J459  (all Asthma subcodes)
+#     "J448" matches only J4480, J4481 (narrower match)
+#   A record is returned if ANY of the 25 diagnosis columns matches ANY code.
+#
+# Set to NULL (or leave as NULL) to return all records regardless of diagnosis.
+#
+# Examples:
+#   dad_icd_codes <- c("J44", "J45")          # COPD and Asthma
+#   dad_icd_codes <- c("I21", "I50")          # Acute MI and Heart failure
+#   dad_icd_codes <- NULL                      # no filter — return everything
+dad_icd_codes <- NULL
 
-# Diagnosis codes for MSP filtering (exact match).
-# Set to NULL to retrieve all records regardless of diagnosis.
-msp_diag_codes <- c(
-  # Add MSP billing/diagnosis codes here, e.g.:
-  # "496",     # COPD
-  "493"     # Asthma
-)
+# ICD-9 codes for MSP filtering — exact match.
+#
+# How it works:
+#   Each code is matched exactly against diag_cd, diag_cd_2, and diag_cd_3.
+#   Unlike DAD, MSP uses ICD-9 codes and does not support prefix matching —
+#   you must supply the exact code as stored in the database.
+#   A record is returned if ANY of the three diagnosis columns matches ANY code.
+#
+# Set to NULL (or leave as NULL) to return all records regardless of diagnosis.
+#
+# Examples:
+#   msp_diag_codes <- c("493", "496")         # Asthma and COPD
+#   msp_diag_codes <- c("410", "428")         # Acute MI and Heart failure
+#   msp_diag_codes <- NULL                    # no filter — return everything
+msp_diag_codes <- NULL
 
 # Adjust date ranges, age_filter, and code lists as needed for your analysis.
 # Remove any optional argument entirely if no restriction is required.
