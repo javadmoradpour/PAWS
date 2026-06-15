@@ -254,7 +254,8 @@ dad_cols <- c(
   "hosp_from", "hosp_to", "care_level",
   "alc_days", "grpr_mthd_label", "cmg_mcc_label", "cmg_cmg_label", "cmg_expct_stay_days",
   "grpr_riw", "cmgp_riw_atpcl_label", "cacs_mac_label", "cacs_cd_label",
-  paste0("diag_code_", 1:25)
+  paste0("diag_code_", 1:25),
+  paste0("interv_code_", 1:20)
 )
 
 msp_cols <- c(
