@@ -11,9 +11,8 @@ library(dbplyr)
 library(tidyr)
 
 
-# Load Data ---------------------------------------------------------------
-source(file.path(getwd(), "script", "load.R"))
+# HSCT Cohort Extraction --------------------------------------------------
+source(file.path(getwd(), "script", "hsct_cohort.R"))
 
-# Source Scripts ----------------------------------------------------------
-
+# Analysis ----------------------------------------------------------------
 source(file.path(getwd(), "script", "analysis.R"))
