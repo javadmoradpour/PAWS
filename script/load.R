@@ -62,19 +62,23 @@ parse_age_filter <- function(x) {
 
 #' Retrieve DAD (Discharge Abstract Database) records.
 #'
-#' Filters by separation_date range, optionally by age, and optionally by a
-#' list of ICD codes matched across diag_code_1 through diag_code_25.
-#' A record is returned if ANY diagnosis column starts with one of the
-#' provided codes (prefix match — e.g. "J44" matches "J44.0", "J44.1", etc.)
+#' Filters by separation_date range, optionally by age, and optionally by
+#' ICD-10-CA diagnosis codes and/or CCI intervention codes.
+#' A record is returned when it matches ANY ICD code OR ANY CCI code (OR logic
+#' across both sets of columns).
 #'
 #' @param con         A DBI database connection object.
 #' @param start_date  Start of date range (character "YYYY-MM-DD" or Date).
 #' @param end_date    End of date range   (character "YYYY-MM-DD" or Date).
 #' @param columns     Character vector of column names to select. NULL = all columns.
 #' @param age_filter  Optional. c(min, max) or "X+" string. Default NULL (no filter).
-#' @param icd_codes   Optional. Character vector of ICD code prefixes to filter on.
-#'                    Matches against diag_code_1 through diag_code_25 (OR logic).
-#'                    Prefix match: "J44" matches "J44", "J44.0", "J44.1", etc.
+#' @param icd_codes   Optional. ICD-10-CA prefixes matched against diag_code_1:25.
+#'                    Prefix match — "J44" matches J440, J441, J449, etc.
+#'                    Default NULL (no filter).
+#' @param cci_codes   Optional. CCI prefixes matched against interv_code_1:20.
+#'                    Supply codes with or without dots — dots are stripped automatically
+#'                    (e.g. "1.WZ.19" and "1WZ19" are treated identically).
+#'                    Prefix match — "1WZ19" matches 1WZ19HHXXA, 1WZ19AAJXA, etc.
 #'                    Default NULL (no filter).
 #' @return            A tibble of DAD records collected into R memory.
 #' @examples
@@ -82,10 +86,12 @@ parse_age_filter <- function(x) {
 #'   get_dad_data(con, "2021-01-01", "2021-12-31", columns = dad_cols,
 #'                icd_codes = c("J44", "J45"))
 #'   get_dad_data(con, "2021-01-01", "2021-12-31", columns = dad_cols,
-#'                age_filter = c(18, 65), icd_codes = c("J44", "J45"))
+#'                cci_codes = c("1WZ19", "1WY19"))
+#'   get_dad_data(con, "2021-01-01", "2021-12-31", columns = dad_cols,
+#'                icd_codes = c("J44", "J45"), cci_codes = c("1WZ19"))
 
 get_dad_data <- function(con, start_date, end_date, columns = NULL,
-                         age_filter = NULL, icd_codes = NULL) {
+                         age_filter = NULL, icd_codes = NULL, cci_codes = NULL) {
   
   query <- tbl(con, in_schema("nb0077aa", "vw_dad"))
   
@@ -114,49 +120,51 @@ get_dad_data <- function(con, start_date, end_date, columns = NULL,
     }
   }
   
-  # ICD code filter: prefix match across diag_code_1 to diag_code_25.
-  # Builds one LIKE condition per code per column, then OR-s everything together.
-  # diag_code_2 to diag_code_25 are guarded with IS NOT NULL first.
-  if (!is.null(icd_codes) && length(icd_codes) > 0) {
+  # Diagnosis (ICD-10-CA) and/or intervention (CCI) filter.
+  # Both use prefix matching across their respective code columns and are
+  # combined with OR — a record is included if it matches either filter.
+  has_icd <- !is.null(icd_codes) && length(icd_codes) > 0
+  has_cci <- !is.null(cci_codes) && length(cci_codes) > 0
+
+  if (has_icd || has_cci) {
 
     make_prefix_filter <- function(col, codes) {
-      lapply(codes, function(code) {
-        expr(!!col %like% !!paste0(code, "%"))
-      })
+      lapply(codes, function(code) expr(!!col %like% !!paste0(code, "%")))
+    }
+
+    add_col_conditions <- function(all_conds, col_name, codes, null_guard) {
+      sym_col <- sym(col_name)
+      new_conds <- make_prefix_filter(sym_col, codes)
+      if (null_guard) {
+        new_conds <- lapply(new_conds, function(cond) expr(!is.na(!!sym_col) & !!cond))
+      }
+      c(all_conds, new_conds)
     }
 
     all_conditions <- list()
 
-    # diag_code_1 (no NULL guard)
-    all_conditions <- c(
-      all_conditions,
-      make_prefix_filter(sym("diag_code_1"), icd_codes)
-    )
-
-    # diag_code_2 to 25 (with NULL guard)
-    diag_cols_nullable <- paste0("diag_code_", 2:25)
-
-    for (col in diag_cols_nullable) {
-      sym_col <- sym(col)
-
-      conditions <- make_prefix_filter(sym_col, icd_codes)
-
-      guarded_conditions <- lapply(conditions, function(cond) {
-        expr(!is.na(!!sym_col) & !!cond)
-      })
-
-      all_conditions <- c(all_conditions, guarded_conditions)
+    if (has_icd) {
+      # diag_code_1 is always populated — no NULL guard needed
+      all_conditions <- add_col_conditions(all_conditions, "diag_code_1", icd_codes, null_guard = FALSE)
+      for (col in paste0("diag_code_", 2:25))
+        all_conditions <- add_col_conditions(all_conditions, col, icd_codes, null_guard = TRUE)
     }
 
-    # Combine ALL conditions into ONE expression
-    icd_filter <- Reduce(function(x, y) expr(!!x | !!y), all_conditions)
+    if (has_cci) {
+      # Strip dots — database stores CCI codes without them (e.g. "1WZ19" not "1.WZ.19")
+      cci_clean <- gsub("\\.", "", cci_codes)
+      for (col in paste0("interv_code_", 1:20))
+        all_conditions <- add_col_conditions(all_conditions, col, cci_clean, null_guard = TRUE)
+    }
 
-    query <- query %>% filter(!!icd_filter)
+    combined_filter <- Reduce(function(x, y) expr(!!x | !!y), all_conditions)
+    query <- query %>% filter(!!combined_filter)
   }
-  
+
   message("Collecting DAD data: ", start_date, " to ", end_date,
-          if (!is.null(age_filter)) paste0(" | age: ",  paste(age_filter, collapse = "-"))  else "",
-          if (!is.null(icd_codes))  paste0(" | ICD: ",  paste(icd_codes,  collapse = ", ")) else "")
+          if (!is.null(age_filter)) paste0(" | age: ", paste(age_filter, collapse = "-")) else "",
+          if (has_icd)              paste0(" | ICD: ", paste(icd_codes,  collapse = ", ")) else "",
+          if (has_cci)              paste0(" | CCI: ", paste(cci_codes,  collapse = ", ")) else "")
   
   collect(query)
 }
@@ -287,6 +295,29 @@ msp_cols <- c(
 #   dad_icd_codes <- NULL                      # no filter — return everything
 dad_icd_codes <- NULL
 
+# CCI (Canadian Classification of Health Interventions) codes for DAD filtering.
+# Matched against interv_code_1 through interv_code_20 using prefix matching.
+#
+# How it works:
+#   CCI codes are stored in the database WITHOUT dots (e.g. "1WZ19", not "1.WZ.19").
+#   You may supply codes with or without dots — dots are stripped automatically.
+#   Prefix matching means shorter codes catch all subgroups:
+#     "1WZ19"  matches 1WZ19HHXXA, 1WZ19AAJXA, and any other 1WZ19 subgroup
+#     "1WZ"    matches all interventions starting with 1WZ (broader)
+#   A record is returned if ANY of the 20 intervention columns matches ANY code.
+#
+# When both icd_codes and cci_codes are set, a record is included if it matches
+# EITHER — ICD and CCI filters are combined with OR logic.
+#
+# Set to NULL (or leave as NULL) to apply no intervention filter.
+#
+# Examples:
+#   dad_cci_codes <- c("1WZ19", "1WY19")       # specific intervention subgroups
+#   dad_cci_codes <- c("1.WZ.19", "1.WY.19")   # dots stripped automatically
+#   dad_cci_codes <- c("1WZ")                   # all 1WZ interventions
+#   dad_cci_codes <- NULL                       # no filter — return everything
+dad_cci_codes <- NULL
+
 # ICD-9 codes for MSP filtering — exact match.
 #
 # How it works:
@@ -312,7 +343,8 @@ df_dad <- get_dad_data(
   end_date   = "2020-12-15",
   columns    = dad_cols,
   age_filter = c(18, 40),         # e.g. c(18, 65) or "65+" or NULL
-  icd_codes  = dad_icd_codes
+  icd_codes  = dad_icd_codes,
+  cci_codes  = dad_cci_codes
 )
 
 df_msp <- get_msp_data(
