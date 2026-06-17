@@ -144,15 +144,18 @@ get_dad_data <- function(con, start_date, end_date, columns = NULL,
     all_conditions <- list()
 
     if (has_icd) {
+      # Strip dots — database stores ICD-10-CA codes without them (e.g. "J440" not "J44.0")
+      icd_clean <- gsub("\\.", "", icd_codes)
       # diag_code_1 is always populated — no NULL guard needed
-      all_conditions <- add_col_conditions(all_conditions, "diag_code_1", icd_codes, null_guard = FALSE)
+      all_conditions <- add_col_conditions(all_conditions, "diag_code_1", icd_clean, null_guard = FALSE)
       for (col in paste0("diag_code_", 2:25))
-        all_conditions <- add_col_conditions(all_conditions, col, icd_codes, null_guard = TRUE)
+        all_conditions <- add_col_conditions(all_conditions, col, icd_clean, null_guard = TRUE)
     }
 
     if (has_cci) {
-      # Strip dots — database stores CCI codes without them (e.g. "1WZ19" not "1.WZ.19")
-      cci_clean <- gsub("\\.", "", cci_codes)
+      # Strip dots and hyphens — database stores CCI codes without them
+      # e.g. "1.LZ.19.HH-U7" → "1LZ19HHU7"
+      cci_clean <- gsub("[.-]", "", cci_codes)
       for (col in paste0("interv_code_", 1:20))
         all_conditions <- add_col_conditions(all_conditions, col, cci_clean, null_guard = TRUE)
     }
@@ -162,9 +165,9 @@ get_dad_data <- function(con, start_date, end_date, columns = NULL,
   }
 
   message("Collecting DAD data: ", start_date, " to ", end_date,
-          if (!is.null(age_filter)) paste0(" | age: ", paste(age_filter, collapse = "-")) else "",
-          if (has_icd)              paste0(" | ICD: ", paste(icd_codes,  collapse = ", ")) else "",
-          if (has_cci)              paste0(" | CCI: ", paste(cci_codes,  collapse = ", ")) else "")
+          if (!is.null(age_filter)) paste0(" | age: ", paste(age_filter, collapse = "-"))         else "",
+          if (has_icd)              paste0(" | ICD: ", paste(gsub("\\.", "", icd_codes), collapse = ", ")) else "",
+          if (has_cci)              paste0(" | CCI: ", paste(gsub("[.-]", "", cci_codes), collapse = ", ")) else "")
   
   collect(query)
 }
@@ -277,14 +280,15 @@ msp_cols <- c(
   "diag_cd", "diag_cd_2", "diag_cd_3"
 )
 
-# ICD-10-CA codes for DAD filtering — prefix match, no dots, no spaces.
+# ICD-10-CA codes for DAD filtering — prefix match.
 #
 # How it works:
+#   Dots are stripped automatically, so "J44.0" and "J440" are treated identically.
 #   Each code is matched against diag_code_1 through diag_code_25 using a
 #   prefix (LIKE) match, so a shorter code catches all its subcodes:
 #     "J44"  matches J440, J441, J449  (all COPD subcodes)
 #     "J45"  matches J450, J451, J459  (all Asthma subcodes)
-#     "J448" matches only J4480, J4481 (narrower match)
+#     "J44.0" or "J440" match only J4400, J4401, ... (narrower)
 #   A record is returned if ANY of the 25 diagnosis columns matches ANY code.
 #
 # Set to NULL (or leave as NULL) to return all records regardless of diagnosis.
@@ -299,8 +303,8 @@ dad_icd_codes <- NULL
 # Matched against interv_code_1 through interv_code_20 using prefix matching.
 #
 # How it works:
-#   CCI codes are stored in the database WITHOUT dots (e.g. "1WZ19", not "1.WZ.19").
-#   You may supply codes with or without dots — dots are stripped automatically.
+#   Dots and hyphens are stripped automatically, so "1.LZ.19.HH-U7" and
+#   "1LZ19HHU7" are treated identically.
 #   Prefix matching means shorter codes catch all subgroups:
 #     "1WZ19"  matches 1WZ19HHXXA, 1WZ19AAJXA, and any other 1WZ19 subgroup
 #     "1WZ"    matches all interventions starting with 1WZ (broader)
@@ -312,10 +316,10 @@ dad_icd_codes <- NULL
 # Set to NULL (or leave as NULL) to apply no intervention filter.
 #
 # Examples:
-#   dad_cci_codes <- c("1WZ19", "1WY19")       # specific intervention subgroups
-#   dad_cci_codes <- c("1.WZ.19", "1.WY.19")   # dots stripped automatically
-#   dad_cci_codes <- c("1WZ")                   # all 1WZ interventions
-#   dad_cci_codes <- NULL                       # no filter — return everything
+#   dad_cci_codes <- c("1WZ19", "1WY19")            # specific intervention subgroups
+#   dad_cci_codes <- c("1.LZ.19.HH-U7")             # dots and hyphens stripped automatically
+#   dad_cci_codes <- c("1WZ")                        # all 1WZ interventions (broader)
+#   dad_cci_codes <- NULL                            # no filter — return everything
 dad_cci_codes <- NULL
 
 # ICD-9 codes for MSP filtering — exact match.
