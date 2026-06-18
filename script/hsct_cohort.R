@@ -50,7 +50,7 @@ get_dad_data <- function(con, start_date, end_date, columns = NULL,
 
   query <- query %>%
     filter(
-      separation_date >= !!start_date,
+      admission_date  >= !!start_date,
       separation_date <= !!end_date,
       patient_master_key > 0,
       patient_master_key < 2000000000
@@ -184,7 +184,7 @@ df_hsct_all <- tbl(con, in_schema("nb0077aa", "vw_dad")) %>%
   select(all_of(dad_cols)) %>%
   filter(
     patient_master_key %in% !!hsct_pmk,
-    separation_date >= !!as.Date(START_DATE),
+    admission_date  >= !!as.Date(START_DATE),
     separation_date <= !!as.Date(END_DATE),
     patient_master_key > 0,
     patient_master_key < 2000000000
