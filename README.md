@@ -68,7 +68,7 @@ df_dad <- get_dad_data(con, start_date = "2020-12-01", end_date = "2020-12-15", 
 df_msp <- get_msp_data(con, start_date = "2020-12-01", end_date = "2020-12-15", ...)
 ```
 
-- **DAD** filters on `separation_date` (hospital discharge date)
+- **DAD** filters on `admission_date >= start_date` and `separation_date <= end_date` (the episode must both start and end within the window)
 - **MSP** filters on `serv_dt` (service/claim date)
 
 ### Age Filter

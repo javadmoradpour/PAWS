@@ -104,7 +104,7 @@ get_dad_data <- function(con, start_date, end_date, columns = NULL,
 
   query <- query %>%
     filter(
-      separation_date >= !!start_date,
+      admission_date  >= !!start_date,
       separation_date <= !!end_date,
       patient_master_key > 0,
       patient_master_key < 2000000000
